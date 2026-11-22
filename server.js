@@ -62,20 +62,32 @@ app.get('/', (req, res) => {
 });
 
 // ===== RESERVATIONS (MySQL table: reservations) =====
-// DB columns: id, client_name, barber, service, reservation_date, reservation_time, status
-// React fields: id, clientName, barber, service, date, time, status
+// DB columns: id, client_name, client_email, barber, service, style_choice,
+//             category, notes, price, reservation_date, reservation_time, status, created_at
+// React fields: id, client / clientName, clientEmail, barber, service, styleChoice,
+//               category, notes, price, date, time, status, createdAt
+
+const VALID_STATUS = ['Pending', 'Approved', 'Declined'];
 
 app.get('/api/reservations', async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT id,
               client_name AS clientName,
+              client_name AS client,
+              client_email AS clientEmail,
               barber,
               service,
+              style_choice AS styleChoice,
+              category,
+              notes,
+              COALESCE(price, 0) AS price,
               DATE_FORMAT(reservation_date, '%Y-%m-%d') AS \`date\`,
               reservation_time AS \`time\`,
-              status
-       FROM reservations`
+              status,
+              created_at AS createdAt
+       FROM reservations
+       ORDER BY id`
     );
     res.json(rows);
   } catch (err) {
@@ -86,21 +98,38 @@ app.get('/api/reservations', async (req, res) => {
 
 app.post('/api/reservations', async (req, res) => {
   try {
-    const { clientName, barber, service, date, time, status } = req.body;
+    const {
+      clientName, client, clientEmail, barber, service,
+      styleChoice, category, notes, price, date, time, status,
+    } = req.body;
+
+    const name = clientName || client || null;
     const finalStatus = status || 'Pending';
+    const finalPrice = Number(price) || 0;
 
     const [result] = await db.query(
       `INSERT INTO reservations
-         (client_name, barber, service, reservation_date, reservation_time, status)
-       VALUES (?,?,?,?,?,?)`,
-      [clientName, barber, service, date, time, finalStatus]
+         (client_name, client_email, barber, service, style_choice,
+          category, notes, price, reservation_date, reservation_time, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        name, clientEmail || null, barber || null, service || null,
+        styleChoice || null, category || null, notes || null, finalPrice,
+        date || null, time || null, finalStatus,
+      ]
     );
 
     const newReservation = {
       id: result.insertId,
-      clientName,
+      clientName: name,
+      client: name,
+      clientEmail: clientEmail || null,
       barber,
       service,
+      styleChoice: styleChoice || '',
+      category: category || '',
+      notes: notes || '',
+      price: finalPrice,
       date,
       time,
       status: finalStatus,
@@ -113,6 +142,7 @@ app.post('/api/reservations', async (req, res) => {
   }
 });
 
+// Full edit (used by the /reservations admin table)
 app.put('/api/reservations/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -137,6 +167,33 @@ app.put('/api/reservations/:id', async (req, res) => {
     res.json(updated);
   } catch (err) {
     console.log('PUT error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Status only (Approve / Decline from the admin dashboard)
+app.patch('/api/reservations/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!VALID_STATUS.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const [result] = await db.query(
+      'UPDATE reservations SET status = ? WHERE id = ?',
+      [status, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Reservation not found' });
+    }
+
+    console.log('Status changed:', id, status);
+    res.json({ id: Number(id), status });
+  } catch (err) {
+    console.log('PATCH status error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
